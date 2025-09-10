@@ -485,22 +485,19 @@ impl GameState {
         count
     }
     
-    /// Count adjacent cells that are part of my territory
-    fn count_my_adjacencies(&self, x: usize, y: usize) -> i32 {
+    /// Count adjacent cells that belong to us (for connectivity scoring)
+    fn count_my_neighbors(&self, x: usize, y: usize) -> i32 {
         let mut count = 0;
-        let directions = [(0, 1), (1, 0), (0, -1), (-1, 0)];
         let my_cell = if self.player == Player::One { Cell::Player1 } else { Cell::Player2 };
         
+        // Check all 4 adjacent cells
+        let directions = [(0, 1), (1, 0), (0, -1), (-1, 0)];
         for (dx, dy) in directions.iter() {
             let nx = x as i32 + dx;
             let ny = y as i32 + dy;
             
-            if nx >= 0 && nx < self.board_width as i32 &&
-               ny >= 0 && ny < self.board_height as i32 {
-                let nx = nx as usize;
-                let ny = ny as usize;
-                
-                if self.board[ny][nx] == my_cell {
+            if nx >= 0 && nx < self.board_width as i32 && ny >= 0 && ny < self.board_height as i32 {
+                if self.board[ny as usize][nx as usize] == my_cell {
                     count += 1;
                 }
             }
@@ -508,15 +505,32 @@ impl GameState {
         
         count
     }
+    
+    /// Count total empty cells on the board (for endgame detection)
+    fn count_total_empty_cells(&self) -> i32 {
+        let mut count = 0;
+        for row in &self.board {
+            for cell in row {
+                if *cell == Cell::Empty {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
 
-    /// SUPER SIMPLE scoring: Just grab as much territory as possible!
-    fn score_move(&self, x: i32, y: i32, _distance_map: &[Vec<i32>], piece_offsets: &[PieceOffset]) -> i32 {
-        let mut new_territory = 0;
-        let mut expansion_potential = 0;
-        
+    /// ADVANCED COMPETITIVE STRATEGY: Multi-layered scoring for winning games
+    fn score_move(&self, x: i32, y: i32, distance_map: &[Vec<i32>], piece_offsets: &[PieceOffset]) -> i32 {
         let my_cell = if self.player == Player::One { Cell::Player1 } else { Cell::Player2 };
+        let opponent_cell = if self.player == Player::One { Cell::Player2 } else { Cell::Player1 };
         
-        // Count how many new cells we'll capture
+        let mut territory_score = 0;
+        let mut blocking_score = 0;
+        let mut expansion_score = 0;
+        let mut strategic_score = 0;
+        let mut new_cells = 0;
+        
+        // Analyze each cell this piece would occupy
         for offset in piece_offsets {
             let board_x = x + offset.dx;
             let board_y = y + offset.dy;
@@ -535,23 +549,54 @@ impl GameState {
                 continue;
             }
             
-            // Count new territory we'll gain
+            // Only score empty cells (we can't capture opponent cells)
             if self.board[by][bx] == Cell::Empty {
-                new_territory += 1;
+                new_cells += 1;
                 
-                // Count empty neighbors for expansion potential
-                expansion_potential += self.count_empty_neighbors(bx, by);
+                // 1. TERRITORY EXPANSION (base value)
+                territory_score += 2000;
+                
+                // 2. AGGRESSIVE BLOCKING - Prioritize cells near opponent
+                let distance_to_opponent = distance_map[by][bx];
+                if distance_to_opponent != -1 && distance_to_opponent <= 3 {
+                    // MASSIVE bonus for blocking opponent expansion
+                    blocking_score += (4 - distance_to_opponent) * 1500;
+                }
+                
+                // 3. EXPANSION POTENTIAL - Future growth opportunities
+                let empty_neighbors = self.count_empty_neighbors(bx, by);
+                expansion_score += empty_neighbors * 300;
+                
+                // 4. STRATEGIC POSITIONING
+                // Bonus for center control
+                let center_x = self.board_width as i32 / 2;
+                let center_y = self.board_height as i32 / 2;
+                let distance_to_center = ((board_x - center_x).abs() + (board_y - center_y).abs()) as i32;
+                strategic_score += (20 - distance_to_center.min(20)) * 50;
+                
+                // Bonus for edge control (walls are valuable)
+                if board_x == 0 || board_x == (self.board_width as i32 - 1) || 
+                   board_y == 0 || board_y == (self.board_height as i32 - 1) {
+                    strategic_score += 400;
+                }
+                
+                // 5. CONNECTIVITY - Stay connected to our territory
+                let my_neighbors = self.count_my_neighbors(bx, by);
+                strategic_score += my_neighbors * 200;
             }
         }
         
-        // SIMPLE WINNING FORMULA:
-        // - 1000 points per new cell (massive territory bonus)
-        // - 100 points per empty neighbor (expansion bonus)
-        // - Random factor to break ties
-        let base_score = new_territory * 1000 + expansion_potential * 100;
-        let tie_breaker = (x + y) % 10; // Small random-ish factor
+        // 6. PIECE SIZE BONUS - Bigger pieces are generally better
+        let piece_bonus = new_cells * 100;
         
-        base_score + tie_breaker
+        // 7. ENDGAME STRATEGY - When board is mostly full, grab everything
+        let total_empty = self.count_total_empty_cells();
+        let endgame_multiplier = if total_empty < 50 { 3 } else { 1 };
+        
+        let final_score = (territory_score + blocking_score + expansion_score + strategic_score + piece_bonus) * endgame_multiplier;
+        
+        // Add small positional tie-breaker
+        final_score + (x + y) % 10
     }
     
     /// WINNING STRATEGY: Find the most aggressive territorial move
