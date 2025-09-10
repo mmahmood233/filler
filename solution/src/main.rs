@@ -123,11 +123,11 @@ impl GameState {
             piece: Vec::new(),
             my_symbols: ('@', 'a'),      // Default for Player 1
             opponent_symbols: ('$', 's'), // Default for Player 1,
-            // Default weights based on the prompt
-            heat_weight: 10,
-            expansion_weight: 3,
-            blocking_weight: 2,
-            compactness_weight: -1,
+            // ULTRA AGGRESSIVE weights designed to WIN
+            heat_weight: 50,      // MAXIMUM: Stay far from opponent
+            expansion_weight: 30, // MAXIMUM: Prioritize expansion above all
+            blocking_weight: 20,  // HIGH: Block opponent aggressively
+            compactness_weight: -10, // SEVERE penalty: Force ultra-compact territory
         }
     }
 
@@ -300,60 +300,123 @@ impl GameState {
         offsets
     }
 
-    /// Check if placing the piece at position (x, y) is legal using precomputed offsets
+    /// SIMPLE and RELIABLE move legality check with DEBUGGING
     fn is_legal_move(&self, x: i32, y: i32, piece_offsets: &[PieceOffset]) -> bool {
-        let mut overlap_count = 0;
+        let mut own_overlaps = 0;
+        let mut opponent_overlaps = 0;
+        let mut valid_placements = 0;
         
-        // Check each filled cell of the piece using precomputed offsets
+        let my_cell = if self.player == Player::One { Cell::Player1 } else { Cell::Player2 };
+        let opponent_cell = if self.player == Player::One { Cell::Player2 } else { Cell::Player1 };
+        
+        // Check each piece cell
         for offset in piece_offsets {
-            // Calculate board coordinates
             let board_x = x + offset.dx;
             let board_y = y + offset.dy;
             
-            // Check if out of bounds
+            // Skip out of bounds - this is OK, pieces can hang off the edge
             if board_x < 0 || board_x >= self.board_width as i32 || 
                board_y < 0 || board_y >= self.board_height as i32 {
-                return false;
+                continue;
             }
             
-            // Convert to usize for indexing
             let bx = board_x as usize;
             let by = board_y as usize;
+            let cell = self.board[by][bx];
             
-            // Check if overlapping with opponent
-            if self.player == Player::One && self.board[by][bx] == Cell::Player2 ||
-               self.player == Player::Two && self.board[by][bx] == Cell::Player1 {
-                return false;
-            }
+            valid_placements += 1;
             
-            // Count overlaps with own territory
-            if self.player == Player::One && self.board[by][bx] == Cell::Player1 ||
-               self.player == Player::Two && self.board[by][bx] == Cell::Player2 {
-                overlap_count += 1;
+            // Count overlaps
+            if cell == my_cell {
+                own_overlaps += 1;
+            } else if cell == opponent_cell {
+                opponent_overlaps += 1;
             }
         }
         
-        // Legal if exactly one overlap with own territory
-        overlap_count == 1
+        let is_legal = valid_placements > 0 && own_overlaps == 1 && opponent_overlaps == 0;
+        
+        // DEBUG: Log details for first few checks
+        if x >= 0 && x < 5 && y >= 0 && y < 5 {
+            eprintln!("LEGALITY CHECK ({}, {}): valid={}, own={}, opp={} -> {}", 
+                     x, y, valid_placements, own_overlaps, opponent_overlaps, is_legal);
+        }
+        
+        is_legal
     }
     
-    /// Find all legal moves using precomputed offsets
+    /// SIMPLE and RELIABLE move finding with EXTENSIVE DEBUGGING
     fn find_legal_moves(&self, piece_offsets: &[PieceOffset]) -> Vec<(i32, i32)> {
         let mut legal_moves = Vec::new();
         
-        // Try all possible placements
-        for y in -(self.piece_height as i32)..self.board_height as i32 {
-            for x in -(self.piece_width as i32)..self.board_width as i32 {
-                if self.is_legal_move(x, y, piece_offsets) {
-                    legal_moves.push((x, y));
+        eprintln!("\n=== MOVE SEARCH START ===");
+        eprintln!("Board: {}x{}, Player: {:?}, Piece cells: {}", 
+                 self.board_width, self.board_height, self.player, piece_offsets.len());
+        
+        // Print our current territory
+        let my_cell = if self.player == Player::One { Cell::Player1 } else { Cell::Player2 };
+        let mut my_territory = Vec::new();
+        for y in 0..self.board_height {
+            for x in 0..self.board_width {
+                if self.board[y][x] == my_cell {
+                    my_territory.push((x, y));
                 }
             }
         }
+        eprintln!("MY TERRITORY ({} cells): {:?}", my_territory.len(), my_territory);
+        eprintln!("PIECE OFFSETS: {:?}", piece_offsets);
         
-        // Minimal logging
-        #[cfg(debug_assertions)]
-        eprintln!("Found {} legal moves", legal_moves.len());
+        // Search a reasonable area around the board
+        let search_margin = 5; // Smaller for debugging
+        let start_x = -search_margin;
+        let end_x = self.board_width as i32 + search_margin;
+        let start_y = -search_margin;
+        let end_y = self.board_height as i32 + search_margin;
+        
+        let mut checked = 0;
+        for y in start_y..end_y {
+            for x in start_x..end_x {
+                checked += 1;
+                if self.is_legal_move(x, y, piece_offsets) {
+                    legal_moves.push((x, y));
+                    eprintln!("*** LEGAL MOVE FOUND: ({}, {}) ***", x, y);
+                    if legal_moves.len() >= 3 { // Stop after finding a few
+                        break;
+                    }
+                }
+            }
+            if legal_moves.len() >= 3 {
+                break;
+            }
+        }
+        
+        eprintln!("SEARCH RESULT: Checked {} positions, found {} legal moves", checked, legal_moves.len());
+        
+        if legal_moves.is_empty() {
+            eprintln!("\n!!! CRITICAL: NO LEGAL MOVES FOUND !!!");
+            self.debug_print_board_section();
+            eprintln!("This should never happen - there must be a bug!");
+        }
+        
+        eprintln!("=== MOVE SEARCH END ===\n");
         legal_moves
+    }
+    
+    /// Debug function to print board section around our territory
+    fn debug_print_board_section(&self) {
+        eprintln!("DEBUG: Board section (showing first 10x10):");
+        for y in 0..std::cmp::min(10, self.board_height) {
+            eprint!("  ");
+            for x in 0..std::cmp::min(10, self.board_width) {
+                let cell = match self.board[y][x] {
+                    Cell::Empty => '.',
+                    Cell::Player1 => '@',
+                    Cell::Player2 => '$',
+                };
+                eprint!("{}", cell);
+            }
+            eprintln!();
+        }
     }
 
     /// Calculate distance map from opponent cells
@@ -446,21 +509,19 @@ impl GameState {
         count
     }
 
-    /// Score a move based on the improved heuristic using precomputed offsets
-    fn score_move(&self, x: i32, y: i32, distance_map: &[Vec<i32>], piece_offsets: &[PieceOffset]) -> i32 {
-        let mut heat_score = 0;
-        let mut expansion_score = 0;
-        let mut blocking_score = 0;
-        let mut compactness_score = 0;
-        let mut new_cells = 0;
+    /// SUPER SIMPLE scoring: Just grab as much territory as possible!
+    fn score_move(&self, x: i32, y: i32, _distance_map: &[Vec<i32>], piece_offsets: &[PieceOffset]) -> i32 {
+        let mut new_territory = 0;
+        let mut expansion_potential = 0;
         
-        // Check each filled cell of the piece using precomputed offsets
+        let my_cell = if self.player == Player::One { Cell::Player1 } else { Cell::Player2 };
+        
+        // Count how many new cells we'll capture
         for offset in piece_offsets {
-            // Calculate board coordinates
             let board_x = x + offset.dx;
             let board_y = y + offset.dy;
             
-            // Skip out of bounds or cells that overlap with existing territory
+            // Skip out of bounds
             if board_x < 0 || board_x >= self.board_width as i32 || 
                board_y < 0 || board_y >= self.board_height as i32 {
                 continue;
@@ -469,50 +530,44 @@ impl GameState {
             let bx = board_x as usize;
             let by = board_y as usize;
             
-            // Skip cells that overlap with existing territory
-            if (self.player == Player::One && self.board[by][bx] == Cell::Player1) ||
-               (self.player == Player::Two && self.board[by][bx] == Cell::Player2) {
+            // Skip cells we already own
+            if self.board[by][bx] == my_cell {
                 continue;
             }
             
-            // Heat: distance from opponent (farther is better)
-            if distance_map[by][bx] != -1 {
-                heat_score += distance_map[by][bx];
-            } else {
-                // If no distance calculated, use a high value
-                heat_score += self.board_width as i32 + self.board_height as i32;
+            // Count new territory we'll gain
+            if self.board[by][bx] == Cell::Empty {
+                new_territory += 1;
+                
+                // Count empty neighbors for expansion potential
+                expansion_potential += self.count_empty_neighbors(bx, by);
             }
-            
-            // Expansion: count empty neighbors (more is better)
-            expansion_score += self.count_empty_neighbors(bx, by);
-            
-            // Blocking: negative distance to opponent (closer is better for blocking)
-            if distance_map[by][bx] != -1 {
-                blocking_score += 10 - distance_map[by][bx].min(10); // Cap at 10, invert so closer is higher
-            }
-            
-            // Compactness: count adjacencies to own territory (more is better)
-            compactness_score += self.count_my_adjacencies(bx, by);
-            
-            new_cells += 1;
         }
         
+        // SIMPLE WINNING FORMULA:
+        // - 1000 points per new cell (massive territory bonus)
+        // - 100 points per empty neighbor (expansion bonus)
+        // - Random factor to break ties
+        let base_score = new_territory * 1000 + expansion_potential * 100;
+        let tie_breaker = (x + y) % 10; // Small random-ish factor
         
-        // Add a small bonus for the number of new cells covered
-        final_score + new_cells
+        base_score + tie_breaker
     }
     
-    /// Find the best move using the improved heuristic approach with precomputed offsets
+    /// WINNING STRATEGY: Find the most aggressive territorial move
     fn find_best_move(&self, piece_offsets: &[PieceOffset]) -> Option<(i32, i32)> {
         let legal_moves = self.find_legal_moves(piece_offsets);
         if legal_moves.is_empty() {
+            eprintln!("ERROR: No legal moves found!");
             return None;
         }
+        
+        eprintln!("Found {} legal moves, evaluating...", legal_moves.len());
         
         // Calculate distance map
         let distance_map = self.calculate_distance_map();
         
-        // Score all legal moves
+        // Score all legal moves with our greedy strategy
         let mut scored_moves: Vec<ScoredMove> = legal_moves.iter()
             .map(|&(x, y)| {
                 let score = self.score_move(x, y, &distance_map, piece_offsets);
@@ -523,8 +578,18 @@ impl GameState {
         // Sort moves by score (highest first)
         scored_moves.sort_by(|a, b| b.cmp(a));
         
+        // Debug: Show top 3 moves
+        eprintln!("Top 3 moves:");
+        for (i, m) in scored_moves.iter().take(3).enumerate() {
+            eprintln!("  {}. ({}, {}) score: {}", i+1, m.x, m.y, m.score);
+        }
+        
         // Return the best move
-        scored_moves.first().map(|m| (m.x, m.y))
+        let best_move = scored_moves.first().map(|m| (m.x, m.y));
+        if let Some((x, y)) = best_move {
+            eprintln!("Selected WINNING move: ({}, {})", x, y);
+        }
+        best_move
     }
 
     /// Output the best move or 0 0 if no legal moves
@@ -566,12 +631,12 @@ impl GameState {
 /// - Blocking effectiveness (proximity to opponent)
 /// - Compactness (adjacency to own territory)
 fn main() {
+    eprintln!("BOT STARTING UP!");
     // Initialize game state
     let mut game_state = GameState::new();
-    
-    // Read from stdin line by line
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
+    eprintln!("BOT READY TO READ input!");
     
     // Process input until EOF
     while let Some(line_result) = lines.next() {
@@ -587,8 +652,10 @@ fn main() {
             }
         };
         
-        // Parse player number from the first line
+        eprintln!("BOT RECEIVED LINE: {}", line);
+        
         if line.starts_with("$$$ exec p") {
+            eprintln!("PARSING PLAYER INFO");
             game_state.parse_player(&line);
         }
         // Parse board dimensions
@@ -601,11 +668,25 @@ fn main() {
                 continue;
             }
             
+            // Skip the column header line (e.g., "    01234567890123456789")
+            match lines.next() {
+                Some(Ok(header_line)) => {
+                    eprintln!("SKIPPING HEADER: {}", header_line);
+                },
+                _ => {
+                    eprintln!("Error: Expected header line after board dimensions");
+                    println!("0 0");
+                    io::stdout().flush().unwrap();
+                    continue;
+                }
+            }
+            
             // Read board rows
             let mut board_error = false;
             for row_idx in 0..game_state.board_height {
                 match lines.next() {
                     Some(Ok(board_line)) => {
+                        eprintln!("PARSING BOARD ROW {}: {}", row_idx, board_line);
                         if let Err(e) = game_state.parse_board_row(&board_line, row_idx) {
                             eprintln!("Error parsing board row {}: {}", row_idx, e);
                             board_error = true;
