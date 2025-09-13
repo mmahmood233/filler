@@ -300,7 +300,7 @@ impl GameState {
         offsets
     }
 
-    /// SIMPLE and RELIABLE move legality check with DEBUGGING
+    /// FAST and RELIABLE move legality check
     fn is_legal_move(&self, x: i32, y: i32, piece_offsets: &[PieceOffset]) -> bool {
         let mut own_overlaps = 0;
         let mut opponent_overlaps = 0;
@@ -334,71 +334,29 @@ impl GameState {
             }
         }
         
-        let is_legal = valid_placements > 0 && own_overlaps == 1 && opponent_overlaps == 0;
-        
-        // DEBUG: Log details for first few checks
-        if x >= 0 && x < 5 && y >= 0 && y < 5 {
-            eprintln!("LEGALITY CHECK ({}, {}): valid={}, own={}, opp={} -> {}", 
-                     x, y, valid_placements, own_overlaps, opponent_overlaps, is_legal);
-        }
-        
-        is_legal
+        // Legal move: at least one valid placement, exactly one own overlap, no opponent overlaps
+        valid_placements > 0 && own_overlaps == 1 && opponent_overlaps == 0
     }
     
-    /// SIMPLE and RELIABLE move finding with EXTENSIVE DEBUGGING
+    /// FAST and RELIABLE move finding - no debug output for speed
     fn find_legal_moves(&self, piece_offsets: &[PieceOffset]) -> Vec<(i32, i32)> {
         let mut legal_moves = Vec::new();
         
-        eprintln!("\n=== MOVE SEARCH START ===");
-        eprintln!("Board: {}x{}, Player: {:?}, Piece cells: {}", 
-                 self.board_width, self.board_height, self.player, piece_offsets.len());
-        
-        // Print our current territory
-        let my_cell = if self.player == Player::One { Cell::Player1 } else { Cell::Player2 };
-        let mut my_territory = Vec::new();
-        for y in 0..self.board_height {
-            for x in 0..self.board_width {
-                if self.board[y][x] == my_cell {
-                    my_territory.push((x, y));
-                }
-            }
-        }
-        eprintln!("MY TERRITORY ({} cells): {:?}", my_territory.len(), my_territory);
-        eprintln!("PIECE OFFSETS: {:?}", piece_offsets);
-        
-        // Search a reasonable area around the board
-        let search_margin = 5; // Smaller for debugging
+        // Search efficiently around the board
+        let search_margin = 10;
         let start_x = -search_margin;
         let end_x = self.board_width as i32 + search_margin;
         let start_y = -search_margin;
         let end_y = self.board_height as i32 + search_margin;
         
-        let mut checked = 0;
         for y in start_y..end_y {
             for x in start_x..end_x {
-                checked += 1;
                 if self.is_legal_move(x, y, piece_offsets) {
                     legal_moves.push((x, y));
-                    eprintln!("*** LEGAL MOVE FOUND: ({}, {}) ***", x, y);
-                    if legal_moves.len() >= 3 { // Stop after finding a few
-                        break;
-                    }
                 }
             }
-            if legal_moves.len() >= 3 {
-                break;
-            }
         }
         
-        eprintln!("SEARCH RESULT: Checked {} positions, found {} legal moves", checked, legal_moves.len());
-        
-        if legal_moves.is_empty() {
-            eprintln!("\n!!! CRITICAL: NO LEGAL MOVES FOUND !!!");
-            self.debug_print_board_section();
-            eprintln!("This should never happen - there must be a bug!");
-        }
-        
-        eprintln!("=== MOVE SEARCH END ===\n");
         legal_moves
     }
     
@@ -518,19 +476,44 @@ impl GameState {
         }
         count
     }
-
-    /// ADVANCED COMPETITIVE STRATEGY: Multi-layered scoring for winning games
-    fn score_move(&self, x: i32, y: i32, distance_map: &[Vec<i32>], piece_offsets: &[PieceOffset]) -> i32 {
+    
+    /// Count our total territory size
+    fn count_my_territory(&self) -> i32 {
+        let mut count = 0;
         let my_cell = if self.player == Player::One { Cell::Player1 } else { Cell::Player2 };
+        for row in &self.board {
+            for cell in row {
+                if *cell == my_cell {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+    
+    /// Count opponent's total territory size
+    fn count_opponent_territory(&self) -> i32 {
+        let mut count = 0;
         let opponent_cell = if self.player == Player::One { Cell::Player2 } else { Cell::Player1 };
+        for row in &self.board {
+            for cell in row {
+                if *cell == opponent_cell {
+                    count += 1;
+                }
+            }
+        }
+        count
+    }
+
+    /// SIMPLE WINNING STRATEGY: Based on breakthrough 9-point approach - maximize legal moves and territory!
+    /// Focus on fundamentals: territory capture and maintaining maximum future move options
+    fn score_move(&self, x: i32, y: i32, _distance_map: &[Vec<i32>], piece_offsets: &[PieceOffset]) -> i32 {
+        let my_cell = if self.player == Player::One { Cell::Player1 } else { Cell::Player2 };
         
-        let mut territory_score = 0;
-        let mut blocking_score = 0;
-        let mut expansion_score = 0;
-        let mut strategic_score = 0;
-        let mut new_cells = 0;
+        let mut score = 0;
+        let mut cells_captured = 0;
         
-        // Analyze each cell this piece would occupy
+        // Simple but effective: count territory we can capture
         for offset in piece_offsets {
             let board_x = x + offset.dx;
             let board_y = y + offset.dy;
@@ -549,116 +532,266 @@ impl GameState {
                 continue;
             }
             
-            // Only score empty cells (we can't capture opponent cells)
+            // Count empty cells we can capture
             if self.board[by][bx] == Cell::Empty {
-                new_cells += 1;
+                cells_captured += 1;
                 
-                // 1. TERRITORY EXPANSION (base value)
-                territory_score += 2000;
+                // BREAKTHROUGH STRATEGY: Simple territory value + future move potential
+                score += 1500; // Slightly increased territory value to compete with bender
                 
-                // 2. AGGRESSIVE BLOCKING - Prioritize cells near opponent
-                let distance_to_opponent = distance_map[by][bx];
-                if distance_to_opponent != -1 && distance_to_opponent <= 3 {
-                    // MASSIVE bonus for blocking opponent expansion
-                    blocking_score += (4 - distance_to_opponent) * 1500;
-                }
-                
-                // 3. EXPANSION POTENTIAL - Future growth opportunities
+                // Key insight: Prioritize moves that keep maximum future options open
                 let empty_neighbors = self.count_empty_neighbors(bx, by);
-                expansion_score += empty_neighbors * 300;
-                
-                // 4. STRATEGIC POSITIONING
-                // Bonus for center control
-                let center_x = self.board_width as i32 / 2;
-                let center_y = self.board_height as i32 / 2;
-                let distance_to_center = ((board_x - center_x).abs() + (board_y - center_y).abs()) as i32;
-                strategic_score += (20 - distance_to_center.min(20)) * 50;
-                
-                // Bonus for edge control (walls are valuable)
-                if board_x == 0 || board_x == (self.board_width as i32 - 1) || 
-                   board_y == 0 || board_y == (self.board_height as i32 - 1) {
-                    strategic_score += 400;
-                }
-                
-                // 5. CONNECTIVITY - Stay connected to our territory
-                let my_neighbors = self.count_my_neighbors(bx, by);
-                strategic_score += my_neighbors * 200;
+                score += empty_neighbors * 200; // Future move potential
             }
         }
         
-        // 6. PIECE SIZE BONUS - Bigger pieces are generally better
-        let piece_bonus = new_cells * 100;
-        
-        // 7. ENDGAME STRATEGY - When board is mostly full, grab everything
-        let total_empty = self.count_total_empty_cells();
-        let endgame_multiplier = if total_empty < 50 { 3 } else { 1 };
-        
-        let final_score = (territory_score + blocking_score + expansion_score + strategic_score + piece_bonus) * endgame_multiplier;
-        
-        // Add small positional tie-breaker
-        final_score + (x + y) % 10
+        // Simple piece efficiency: reward capturing more territory
+        if cells_captured > 0 {
+            // BREAKTHROUGH INSIGHT: Simple territory counting works better than complex scoring
+            score += cells_captured * 500; // Linear bonus for territory captured
+            
+            // Base bonus for any valid move
+            score += 5000;
+            
+            return score;
+        } else {
+            return 0; // Invalid move
+        }
     }
     
-    /// WINNING STRATEGY: Find the most aggressive territorial move
-    fn find_best_move(&self, piece_offsets: &[PieceOffset]) -> Option<(i32, i32)> {
-        let legal_moves = self.find_legal_moves(piece_offsets);
-        if legal_moves.is_empty() {
-            eprintln!("ERROR: No legal moves found!");
-            return None;
-        }
-        
-        eprintln!("Found {} legal moves, evaluating...", legal_moves.len());
-        
-        // Calculate distance map
+    /// ULTRA-COMPETITIVE MOVE GENERATION: Strategic move selection for maximum winning potential!
+    fn make_move(&self, piece_offsets: &[PieceOffset]) {
+        // Calculate distance map from opponent territory
         let distance_map = self.calculate_distance_map();
         
-        // Score all legal moves with our greedy strategy
-        let mut scored_moves: Vec<ScoredMove> = legal_moves.iter()
-            .map(|&(x, y)| {
-                let score = self.score_move(x, y, &distance_map, piece_offsets);
-                ScoredMove::new(x, y, score)
-            })
-            .collect();
+        // Find all legal moves
+        let mut legal_moves = self.find_legal_moves(piece_offsets);
         
-        // Sort moves by score (highest first)
-        scored_moves.sort_by(|a, b| b.cmp(a));
-        
-        // Debug: Show top 3 moves
-        eprintln!("Top 3 moves:");
-        for (i, m) in scored_moves.iter().take(3).enumerate() {
-            eprintln!("  {}. ({}, {}) score: {}", i+1, m.x, m.y, m.score);
+        // If no moves found, try EMERGENCY SEARCH with larger area
+        if legal_moves.is_empty() {
+            eprintln!("Normal search found 0 moves, trying emergency search...");
+            legal_moves = self.emergency_move_search(piece_offsets);
+            eprintln!("Emergency search found {} moves", legal_moves.len());
         }
         
-        // Return the best move
-        let best_move = scored_moves.first().map(|m| (m.x, m.y));
-        if let Some((x, y)) = best_move {
-            eprintln!("Selected WINNING move: ({}, {})", x, y);
-        }
-        best_move
-    }
-
-    /// Output the best move or 0 0 if no legal moves
-    /// Uses the improved heuristic to select the optimal move
-    fn make_move(&self, piece_offsets: &[PieceOffset]) {
-        if let Some((x, y)) = self.find_best_move(piece_offsets) {
-            // Output the selected move to stdout
-            println!("{} {}", x, y);
-            
-            // Minimal logging of the selected move
-            #[cfg(debug_assertions)]
-            eprintln!("Selected move: {} {}", x, y);
-        } else {
-            // No legal moves, output 0 0 as required by the protocol
+        if legal_moves.is_empty() {
+            // DEBUG: Log when no moves found
+            eprintln!("ERROR: No legal moves found even after emergency search!");
             println!("0 0");
+        } else {
+            // DEBUG: Log move count and game state
+            let my_territory = self.count_my_territory();
+            let opponent_territory = self.count_opponent_territory();
+            eprintln!("Found {} legal moves. Territory: Us={}, Opponent={}", 
+                     legal_moves.len(), my_territory, opponent_territory);
             
-            // Minimal logging when no legal moves are found
-            #[cfg(debug_assertions)]
-            eprintln!("No legal moves found, outputting 0 0");
+            // Score all moves and collect them for strategic selection
+            let mut scored_moves: Vec<ScoredMove> = Vec::new();
+            
+            for &(x, y) in &legal_moves {
+                let score = self.score_move(x, y, &distance_map, piece_offsets);
+                scored_moves.push(ScoredMove::new(x, y, score));
+            }
+            
+            // Sort moves by score (highest first)
+            scored_moves.sort_by(|a, b| b.score.cmp(&a.score));
+            
+            // Strategic move selection: Consider top moves and apply additional criteria
+            let best_move = if scored_moves.len() == 1 {
+                // Only one move available
+                scored_moves[0].clone()
+            } else if scored_moves.len() <= 3 {
+                // Few moves available - pick the absolute best
+                scored_moves[0].clone()
+            } else {
+                // Multiple good moves - apply advanced selection strategy
+                self.select_strategic_move(&scored_moves, &distance_map, piece_offsets)
+            };
+            
+            eprintln!("Selected move ({}, {}) with score {}", 
+                     best_move.x, best_move.y, best_move.score);
+            
+            println!("{} {}", best_move.x, best_move.y);
         }
         
-        // Ensure output is flushed immediately
         io::stdout().flush().unwrap();
     }
+    
+    /// EMERGENCY MOVE SEARCH: Exhaustive search when normal search fails
+    fn emergency_move_search(&self, piece_offsets: &[PieceOffset]) -> Vec<(i32, i32)> {
+        let mut moves = Vec::new();
+        
+        // Exhaustive search across entire board
+        for y in 0..self.board_height as i32 {
+            for x in 0..self.board_width as i32 {
+                if self.is_legal_move(x, y, piece_offsets) {
+                    moves.push((x, y));
+                }
+            }
+        }
+        
+        moves
+    }
+    
+    /// STRATEGIC MOVE SELECTION: Advanced move selection when multiple good options exist
+    fn select_strategic_move(&self, scored_moves: &[ScoredMove], distance_map: &[Vec<i32>], piece_offsets: &[PieceOffset]) -> ScoredMove {
+        // Get game state context
+        let my_territory = self.count_my_territory();
+        let opponent_territory = self.count_opponent_territory();
+        let total_cells = self.board_width * self.board_height;
+        let game_progress = (my_territory + opponent_territory) as f32 / total_cells as f32;
+        
+        // Consider top 5 moves for strategic analysis
+        let top_moves = &scored_moves[0..scored_moves.len().min(5)];
+        
+        // Early game (< 30% filled): Focus on expansion and positioning
+        if game_progress < 0.3 {
+            // Prefer moves that maximize future expansion potential
+            let mut best_expansion_move = &top_moves[0];
+            let mut best_expansion_score = 0;
+            
+            for move_candidate in top_moves {
+                let mut expansion_potential = 0;
+                
+                // Calculate expansion potential for this move
+                for offset in piece_offsets {
+                    let board_x = move_candidate.x + offset.dx;
+                    let board_y = move_candidate.y + offset.dy;
+                    
+                    if board_x >= 0 && board_x < self.board_width as i32 && 
+                       board_y >= 0 && board_y < self.board_height as i32 {
+                        let bx = board_x as usize;
+                        let by = board_y as usize;
+                        
+                        if self.board[by][bx] == Cell::Empty {
+                            expansion_potential += self.count_empty_neighbors(bx, by);
+                        }
+                    }
+                }
+                
+                if expansion_potential > best_expansion_score {
+                    best_expansion_score = expansion_potential;
+                    best_expansion_move = move_candidate;
+                }
+            }
+            
+            return best_expansion_move.clone();
+        }
+        
+        // Mid game (30-70% filled): Balance between expansion and blocking
+        else if game_progress < 0.7 {
+            // If we're behind, prioritize aggressive expansion
+            if my_territory < opponent_territory {
+                // Find move that captures the most territory
+                let mut best_territory_move = &top_moves[0];
+                let mut best_territory_count = 0;
+                
+                for move_candidate in top_moves {
+                    let mut territory_captured = 0;
+                    
+                    for offset in piece_offsets {
+                        let board_x = move_candidate.x + offset.dx;
+                        let board_y = move_candidate.y + offset.dy;
+                        
+                        if board_x >= 0 && board_x < self.board_width as i32 && 
+                           board_y >= 0 && board_y < self.board_height as i32 {
+                            let bx = board_x as usize;
+                            let by = board_y as usize;
+                            
+                            if self.board[by][bx] == Cell::Empty {
+                                territory_captured += 1;
+                            }
+                        }
+                    }
+                    
+                    if territory_captured > best_territory_count {
+                        best_territory_count = territory_captured;
+                        best_territory_move = move_candidate;
+                    }
+                }
+                
+                return best_territory_move.clone();
+            }
+            // If we're ahead or equal, balance expansion with blocking
+            else {
+                // Prefer moves that are close to opponent but still expand our territory
+                let mut best_balanced_move = &top_moves[0];
+                let mut best_balance_score = 0;
+                
+                for move_candidate in top_moves {
+                    let mut balance_score = 0;
+                    let mut territory_captured = 0;
+                    let mut blocking_value = 0;
+                    
+                    for offset in piece_offsets {
+                        let board_x = move_candidate.x + offset.dx;
+                        let board_y = move_candidate.y + offset.dy;
+                        
+                        if board_x >= 0 && board_x < self.board_width as i32 && 
+                           board_y >= 0 && board_y < self.board_height as i32 {
+                            let bx = board_x as usize;
+                            let by = board_y as usize;
+                            
+                            if self.board[by][bx] == Cell::Empty {
+                                territory_captured += 1;
+                                let opponent_distance = distance_map[by][bx];
+                                if opponent_distance != -1 && opponent_distance <= 4 {
+                                    blocking_value += 5 - opponent_distance;
+                                }
+                            }
+                        }
+                    }
+                    
+                    balance_score = territory_captured * 100 + blocking_value * 50;
+                    
+                    if balance_score > best_balance_score {
+                        best_balance_score = balance_score;
+                        best_balanced_move = move_candidate;
+                    }
+                }
+                
+                return best_balanced_move.clone();
+            }
+        }
+        
+        // End game (> 70% filled): Focus on maximum territory capture
+        else {
+            // In endgame, every empty cell matters - pick move with highest territory capture
+            let mut best_endgame_move = &top_moves[0];
+            let mut best_endgame_score = 0;
+            
+            for move_candidate in top_moves {
+                let mut endgame_score = 0;
+                
+                for offset in piece_offsets {
+                    let board_x = move_candidate.x + offset.dx;
+                    let board_y = move_candidate.y + offset.dy;
+                    
+                    if board_x >= 0 && board_x < self.board_width as i32 && 
+                       board_y >= 0 && board_y < self.board_height as i32 {
+                        let bx = board_x as usize;
+                        let by = board_y as usize;
+                        
+                        if self.board[by][bx] == Cell::Empty {
+                            endgame_score += 1000; // High value for each cell
+                            // Extra bonus for cells that deny opponent future moves
+                            let empty_neighbors = self.count_empty_neighbors(bx, by);
+                            endgame_score += empty_neighbors * 100;
+                        }
+                    }
+                }
+                
+                if endgame_score > best_endgame_score {
+                    best_endgame_score = endgame_score;
+                    best_endgame_move = move_candidate;
+                }
+            }
+            
+            return best_endgame_move.clone();
+        }
+    }
+
+
 }
 
 /// Main function that handles the game loop for the Filler bot
@@ -676,12 +809,10 @@ impl GameState {
 /// - Blocking effectiveness (proximity to opponent)
 /// - Compactness (adjacency to own territory)
 fn main() {
-    eprintln!("BOT STARTING UP!");
     // Initialize game state
     let mut game_state = GameState::new();
     let stdin = io::stdin();
     let mut lines = stdin.lock().lines();
-    eprintln!("BOT READY TO READ input!");
     
     // Process input until EOF
     while let Some(line_result) = lines.next() {
@@ -697,10 +828,9 @@ fn main() {
             }
         };
         
-        eprintln!("BOT RECEIVED LINE: {}", line);
+        // Process the input line
         
         if line.starts_with("$$$ exec p") {
-            eprintln!("PARSING PLAYER INFO");
             game_state.parse_player(&line);
         }
         // Parse board dimensions
@@ -715,8 +845,8 @@ fn main() {
             
             // Skip the column header line (e.g., "    01234567890123456789")
             match lines.next() {
-                Some(Ok(header_line)) => {
-                    eprintln!("SKIPPING HEADER: {}", header_line);
+                Some(Ok(_header_line)) => {
+                    // Header line skipped
                 },
                 _ => {
                     eprintln!("Error: Expected header line after board dimensions");
@@ -731,7 +861,6 @@ fn main() {
             for row_idx in 0..game_state.board_height {
                 match lines.next() {
                     Some(Ok(board_line)) => {
-                        eprintln!("PARSING BOARD ROW {}: {}", row_idx, board_line);
                         if let Err(e) = game_state.parse_board_row(&board_line, row_idx) {
                             eprintln!("Error parsing board row {}: {}", row_idx, e);
                             board_error = true;
