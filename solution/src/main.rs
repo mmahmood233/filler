@@ -177,32 +177,22 @@ impl GameState {
         Ok(())
     }
 
-    /// Parse a board row
     fn parse_board_row(&mut self, line: &str, row_idx: usize) -> Result<(), String> {
-        // Skip the row index if present
-        let line_content = if line.contains(' ') {
-            line.split_whitespace().nth(1).unwrap_or(line)
-        } else {
-            line
-        };
-
-        // Ensure the line has enough characters
+        let line_content = if line.len() >= 4 { &line[4..] } else { line };
         if line_content.len() < self.board_width {
             return Err(format!("Board row too short: {}", line_content));
         }
-
-        // Parse each character in the row
         for (col_idx, ch) in line_content.chars().take(self.board_width).enumerate() {
             self.board[row_idx][col_idx] = match ch {
                 '.' => Cell::Empty,
-                '@' | 'a' => Cell::Player1,  // @ and a are always Player 1
-                '$' | 's' => Cell::Player2,  // $ and s are always Player 2
+                '@' | 'a' => Cell::Player1,
+                '$' | 's' => Cell::Player2,
                 _ => return Err(format!("Unknown board cell: {}", ch)),
             };
         }
-
         Ok(())
     }
+    
 
     /// Parse piece dimensions and initialize the piece
     fn parse_piece_dimensions(&mut self, line: &str) -> Result<(), String> {
@@ -243,122 +233,104 @@ impl GameState {
         Ok(())
     }
 
-    /// Trim the piece to its minimal bounding box and precompute offsets
-    fn trim_piece(&mut self) -> Vec<PieceOffset> {
-        // Find the bounds of the filled cells
-        let mut min_row = self.piece_height;
-        let mut max_row = 0;
-        let mut min_col = self.piece_width;
-        let mut max_col = 0;
+/// Trim the piece to its minimal bounding box and PRECISELY return offsets
+fn trim_piece(&mut self) -> (Vec<PieceOffset>, i32, i32) {
+    // Find bounds of filled cells within the original piece grid
+    let mut min_row = self.piece_height;
+    let mut max_row = 0;
+    let mut min_col = self.piece_width;
+    let mut max_col = 0;
 
-        // Find the bounds
-        for row in 0..self.piece_height {
-            for col in 0..self.piece_width {
-                if self.piece[row][col] == PieceCell::Filled {
-                    min_row = min_row.min(row);
-                    max_row = max_row.max(row);
-                    min_col = min_col.min(col);
-                    max_col = max_col.max(col);
-                }
+    for r in 0..self.piece_height {
+        for c in 0..self.piece_width {
+            if self.piece[r][c] == PieceCell::Filled {
+                min_row = min_row.min(r);
+                max_row = max_row.max(r);
+                min_col = min_col.min(c);
+                max_col = max_col.max(c);
             }
         }
-
-        // If no filled cells found, return empty offsets
-        if min_row > max_row || min_col > max_col {
-            return Vec::new();
-        }
-
-        // Create a new trimmed piece
-        let new_height = max_row - min_row + 1;
-        let new_width = max_col - min_col + 1;
-        let mut new_piece = vec![vec![PieceCell::Empty; new_width]; new_height];
-        let mut offsets = Vec::new();
-
-        // Copy the relevant part and collect offsets
-        for row in 0..new_height {
-            for col in 0..new_width {
-                let orig_cell = self.piece[min_row + row][min_col + col];
-                new_piece[row][col] = orig_cell;
-                
-                if orig_cell == PieceCell::Filled {
-                    offsets.push(PieceOffset {
-                        dx: col as i32,
-                        dy: row as i32,
-                    });
-                }
-            }
-        }
-
-        // Update the piece
-        self.piece = new_piece;
-        self.piece_width = new_width;
-        self.piece_height = new_height;
-
-        // Minimal logging
-        #[cfg(debug_assertions)]
-        eprintln!("Trimmed piece to {}x{} with {} filled cells", new_width, new_height, offsets.len());
-        offsets
+    }
+    // no filled cells? (shouldn't happen) — return empty
+    if min_row > max_row || min_col > max_col {
+        return (Vec::new(), 0, 0);
     }
 
-    /// FAST and RELIABLE move legality check
-    fn is_legal_move(&self, x: i32, y: i32, piece_offsets: &[PieceOffset]) -> bool {
-        let mut own_overlaps = 0;
-        let mut opponent_overlaps = 0;
-        let mut valid_placements = 0;
-        
-        let my_cell = if self.player == Player::One { Cell::Player1 } else { Cell::Player2 };
-        let opponent_cell = if self.player == Player::One { Cell::Player2 } else { Cell::Player1 };
-        
-        // Check each piece cell
-        for offset in piece_offsets {
-            let board_x = x + offset.dx;
-            let board_y = y + offset.dy;
-            
-            // Skip out of bounds - this is OK, pieces can hang off the edge
-            if board_x < 0 || board_x >= self.board_width as i32 || 
-               board_y < 0 || board_y >= self.board_height as i32 {
-                continue;
-            }
-            
-            let bx = board_x as usize;
-            let by = board_y as usize;
-            let cell = self.board[by][bx];
-            
-            valid_placements += 1;
-            
-            // Count overlaps
-            if cell == my_cell {
-                own_overlaps += 1;
-            } else if cell == opponent_cell {
-                opponent_overlaps += 1;
+    let new_h = max_row - min_row + 1;
+    let new_w = max_col - min_col + 1;
+    let mut new_piece = vec![vec![PieceCell::Empty; new_w]; new_h];
+    let mut offsets = Vec::new();
+
+    for r in 0..new_h {
+        for c in 0..new_w {
+            let cell = self.piece[min_row + r][min_col + c];
+            new_piece[r][c] = cell;
+            if cell == PieceCell::Filled {
+                offsets.push(PieceOffset { dx: c as i32, dy: r as i32 });
             }
         }
-        
-        // Legal move: at least one valid placement, exactly one own overlap, no opponent overlaps
-        valid_placements > 0 && own_overlaps == 1 && opponent_overlaps == 0
     }
+
+    // Update dimensions to the TRIMMED box
+    self.piece = new_piece;
+    self.piece_width = new_w;
+    self.piece_height = new_h;
+
+    // Return offsets to map trimmed → original
+    (offsets, min_col as i32, min_row as i32)
+}
+
+
+fn is_legal_move(&self, x: i32, y: i32, piece_offsets: &[PieceOffset]) -> bool {
+    let mut own_overlaps = 0;
+    let my = if self.player == Player::One { Cell::Player1 } else { Cell::Player2 };
+    let op = if self.player == Player::One { Cell::Player2 } else { Cell::Player1 };
+
+    for off in piece_offsets {
+        let bx = x + off.dx;
+        let by = y + off.dy;
+
+        // MUST be fully inside board
+        if bx < 0 || by < 0 || bx >= self.board_width as i32 || by >= self.board_height as i32 {
+            return false;
+        }
+        match self.board[by as usize][bx as usize] {
+            c if c == op => return false,
+            c if c == my => own_overlaps += 1,
+            _ => {}
+        }
+    }
+    own_overlaps == 1
+}
+
     
-    /// FAST and RELIABLE move finding - no debug output for speed
-    fn find_legal_moves(&self, piece_offsets: &[PieceOffset]) -> Vec<(i32, i32)> {
-        let mut legal_moves = Vec::new();
-        
-        // Search efficiently around the board
-        let search_margin = 10;
-        let start_x = -search_margin;
-        let end_x = self.board_width as i32 + search_margin;
-        let start_y = -search_margin;
-        let end_y = self.board_height as i32 + search_margin;
-        
-        for y in start_y..end_y {
-            for x in start_x..end_x {
-                if self.is_legal_move(x, y, piece_offsets) {
-                    legal_moves.push((x, y));
-                }
+    
+    
+fn find_legal_moves(&self, piece_offsets: &[PieceOffset], trim_off_x: i32, trim_off_y: i32) -> Vec<(i32, i32)> {
+    let mut legal = Vec::new();
+    if self.piece_width > self.board_width || self.piece_height > self.board_height {
+        return legal;
+    }
+
+    // x,y here are **TRIMMED** top-lefts. We later print (x - trim_off_x, y - trim_off_y).
+    // To guarantee non-negative printed coords, start scan at those offsets.
+    let start_x = trim_off_x;
+    let start_y = trim_off_y;
+    let end_x = self.board_width as i32 - self.piece_width as i32 + trim_off_x;
+    let end_y = self.board_height as i32 - self.piece_height as i32 + trim_off_y;
+
+    for y in start_y..=end_y {
+        for x in start_x..=end_x {
+            if self.is_legal_move(x, y, piece_offsets) {
+                legal.push((x, y));
             }
         }
-        
-        legal_moves
     }
+    legal
+}
+
+    
+    
     
     /// Debug function to print board section around our territory
     fn debug_print_board_section(&self) {
@@ -505,120 +477,146 @@ impl GameState {
         count
     }
 
-    /// SIMPLE WINNING STRATEGY: Based on breakthrough 9-point approach - maximize legal moves and territory!
-    /// Focus on fundamentals: territory capture and maintaining maximum future move options
-    fn score_move(&self, x: i32, y: i32, _distance_map: &[Vec<i32>], piece_offsets: &[PieceOffset]) -> i32 {
-        let my_cell = if self.player == Player::One { Cell::Player1 } else { Cell::Player2 };
-        
-        let mut score = 0;
-        let mut cells_captured = 0;
-        
-        // Simple but effective: count territory we can capture
-        for offset in piece_offsets {
-            let board_x = x + offset.dx;
-            let board_y = y + offset.dy;
-            
-            // Skip out of bounds
-            if board_x < 0 || board_x >= self.board_width as i32 || 
-               board_y < 0 || board_y >= self.board_height as i32 {
-                continue;
-            }
-            
-            let bx = board_x as usize;
-            let by = board_y as usize;
-            
-            // Skip cells we already own
-            if self.board[by][bx] == my_cell {
-                continue;
-            }
-            
-            // Count empty cells we can capture
-            if self.board[by][bx] == Cell::Empty {
-                cells_captured += 1;
-                
-                // CONNECTIVITY-FIRST STRATEGY: Prioritize moves that keep us connected to large empty areas
-                // This prevents the "0 0" fallbacks that are killing us
-                score += 1000; // Base territory value
-                
-                // CRITICAL: Heavily weight moves that connect to large empty regions
-                let empty_neighbors = self.count_empty_neighbors(bx, by);
-                score += empty_neighbors * empty_neighbors * 1000; // Quadratic bonus for connectivity
-            }
-        }
-        
-        // HYBRID STRATEGY: Combine connectivity and piece size for maximum effectiveness
-        if cells_captured > 0 {
-            // CONNECTIVITY + PIECE SIZE: Prevent "0 0" fallbacks while maximizing territory
-            // The connectivity scoring above prevents early game death
-            // Now add piece size bonus for efficient territory capture
-            score += cells_captured * cells_captured * 5000; // Quadratic piece size bonus
-            
-            return score;
-        } else {
-            return 0; // Invalid move
-        }
-    }
+    fn score_move(&self, x: i32, y: i32, dist: &[Vec<i32>], piece_offsets: &[PieceOffset]) -> i32 {
+        let my  = if self.player == Player::One { Cell::Player1 } else { Cell::Player2 };
+        let op  = if self.player == Player::One { Cell::Player2 } else { Cell::Player1 };
     
-    /// ULTRA-COMPETITIVE MOVE GENERATION: Strategic move selection for maximum winning potential!
-    fn make_move(&self, piece_offsets: &[PieceOffset]) {
-        // Calculate distance map from opponent territory
-        let distance_map = self.calculate_distance_map();
-        
-        // Find all legal moves
-        let mut legal_moves = self.find_legal_moves(piece_offsets);
-        
-        // If no moves found, try EMERGENCY SEARCH with larger area
-        if legal_moves.is_empty() {
-            eprintln!("Normal search found 0 moves, trying emergency search...");
-            legal_moves = self.emergency_move_search(piece_offsets);
-            eprintln!("Emergency search found {} moves", legal_moves.len());
-        }
-        
-        if legal_moves.is_empty() {
-            // DEBUG: Log when no moves found
-            eprintln!("ERROR: No legal moves found even after emergency search!");
-            println!("0 0");
-        } else {
-            // DEBUG: Log move count and game state
-            let my_territory = self.count_my_territory();
-            let opponent_territory = self.count_opponent_territory();
-            eprintln!("Found {} legal moves. Territory: Us={}, Opponent={}", 
-                     legal_moves.len(), my_territory, opponent_territory);
-            
-            // Find the best move by scoring all legal moves
-            let mut best_move = legal_moves[0];
-            let mut best_score = self.score_move(best_move.0, best_move.1, &distance_map, piece_offsets);
-            
-            for &(x, y) in &legal_moves {
-                let score = self.score_move(x, y, &distance_map, piece_offsets);
-                if score > best_score {
-                    best_score = score;
-                    best_move = (x, y);
+        // game phase
+        let my_t = self.count_my_territory();
+        let op_t = self.count_opponent_territory();
+        let occ  = my_t + op_t;
+        let total = (self.board_width * self.board_height) as i32;
+        let p = occ as f32 / total as f32;
+    
+        // features
+        let mut new_cells = 0;   // empty cells we’ll claim
+        let mut liberties = 0;   // empty-neighbor count around claimed cells
+        let mut heat_sum  = 0;   // sum of distance to opponent (smaller is more pressure)
+        let mut adj_op    = 0;   // adjacency to opponent (blocking)
+    
+        for off in piece_offsets {
+            let bx = (x + off.dx) as usize;
+            let by = (y + off.dy) as usize;
+    
+            if self.board[by][bx] == Cell::Empty {
+                new_cells += 1;
+    
+                liberties += self.count_empty_neighbors(bx, by);
+    
+                let d = dist[by][bx];
+                if d > 0 { heat_sum += d; }
+    
+                for (dx,dy) in [(1,0),(-1,0),(0,1),(0,-1)] {
+                    let nx = bx as i32 + dx;
+                    let ny = by as i32 + dy;
+                    if nx >= 0 && ny >= 0 && nx < self.board_width as i32 && ny < self.board_height as i32 {
+                        if self.board[ny as usize][nx as usize] == op { adj_op += 1; }
+                    }
                 }
             }
-            
-            eprintln!("DEBUG: Best move ({}, {}) with score {}", best_move.0, best_move.1, best_score);
-            println!("{} {}", best_move.0, best_move.1);
         }
-        
+        if new_cells == 0 { return i32::MIN/4; }
+    
+        // weights by phase
+        let (w_new, w_lib, w_adj, w_heat) = if p < 0.35 {
+            (150, 40, 15, -5)     // early: expansion + options
+        } else if p < 0.70 {
+            (120, 20, 35, -15)    // mid: balance with pressure
+        } else {
+            (200, 10, 50, -25)    // late: grab cells & choke
+        };
+    
+        let mut s = 0;
+        s += new_cells * w_new;
+        s += liberties * w_lib;
+        s += adj_op * w_adj;
+        s += heat_sum * w_heat; // negative weight prefers smaller sums (closer to foe)
+    
+        // if behind, add aggression
+        if my_t < op_t { s += adj_op * 20; }
+    
+        // small connectivity bias (stay near our mass)
+        let mut best_conn = i32::MAX;
+        for (tx, ty) in self.get_my_territory_positions() {
+            let d = (x - tx as i32).abs() + (y - ty as i32).abs();
+            if d < best_conn { best_conn = d; }
+        }
+        if my_t > 0 { s += (10 - best_conn.min(10)) * 10; }
+    
+        s
+    }
+
+    fn get_my_territory_positions(&self) -> Vec<(usize, usize)> {
+        let my_cell = if self.player == Player::One { Cell::Player1 } else { Cell::Player2 };
+        let mut pos = Vec::new();
+        for y in 0..self.board_height {
+            for x in 0..self.board_width {
+                if self.board[y][x] == my_cell {
+                    pos.push((x, y));
+                }
+            }
+        }
+        pos
+    }
+    
+    
+    
+    
+    fn make_move(&self, piece_offsets: &[PieceOffset], trim_off_x: i32, trim_off_y: i32) {
+        let distance_map = self.calculate_distance_map();
+    
+        // Find legal moves with offset-aware scan
+        let mut legal_moves = self.find_legal_moves(piece_offsets, trim_off_x, trim_off_y);
+    
+        if legal_moves.is_empty() {
+            legal_moves = self.emergency_move_search(piece_offsets, trim_off_x, trim_off_y);
+        }
+    
+        if legal_moves.is_empty() {
+            println!("0 0");
+        } else {
+            let mut best = legal_moves[0];
+            let mut best_score = self.score_move(best.0, best.1, &distance_map, piece_offsets);
+    
+            for &(x, y) in &legal_moves {
+                let s = self.score_move(x, y, &distance_map, piece_offsets);
+                if s > best_score {
+                    best_score = s;
+                    best = (x, y);
+                }
+            }
+    
+            // Convert TRIMMED anchor → ORIGINAL top-left for the engine
+            let out_x = best.0 - trim_off_x;
+            let out_y = best.1 - trim_off_y;
+            // Safety (should already be ≥0 and within board)
+            let ox = out_x.max(0);
+            let oy = out_y.max(0);
+    
+            println!("{} {}", ox, oy);
+        }
         io::stdout().flush().unwrap();
     }
     
+    
     /// EMERGENCY MOVE SEARCH: Exhaustive search when normal search fails
-    fn emergency_move_search(&self, piece_offsets: &[PieceOffset]) -> Vec<(i32, i32)> {
+    fn emergency_move_search(&self, piece_offsets: &[PieceOffset], trim_off_x: i32, trim_off_y: i32) -> Vec<(i32, i32)> {
         let mut moves = Vec::new();
-        
-        // Exhaustive search across entire board
-        for y in 0..self.board_height as i32 {
-            for x in 0..self.board_width as i32 {
+        let start_x = trim_off_x;
+        let start_y = trim_off_y;
+        let end_x = self.board_width as i32 - self.piece_width as i32 + trim_off_x;
+        let end_y = self.board_height as i32 - self.piece_height as i32 + trim_off_y;
+    
+        for y in start_y..=end_y {
+            for x in start_x..=end_x {
                 if self.is_legal_move(x, y, piece_offsets) {
                     moves.push((x, y));
                 }
             }
         }
-        
         moves
     }
+    
     
     /// STRATEGIC MOVE SELECTION: Advanced move selection when multiple good options exist
     fn select_strategic_move(&self, scored_moves: &[ScoredMove], distance_map: &[Vec<i32>], piece_offsets: &[PieceOffset]) -> ScoredMove {
@@ -913,10 +911,10 @@ fn main() {
                     }
                     
                     // Trim the piece to its minimal bounding box and get precomputed offsets
-                    let piece_offsets = game_state.trim_piece();
+                    let (piece_offsets, trim_off_x, trim_off_y) = game_state.trim_piece();
                     
                     // Make a move using the precomputed offsets
-                    game_state.make_move(&piece_offsets);
+                    game_state.make_move(&piece_offsets, trim_off_x, trim_off_y);
                     break;
                 }
             }
