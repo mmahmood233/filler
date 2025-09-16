@@ -195,8 +195,8 @@ impl GameState {
         for (col_idx, ch) in line_content.chars().take(self.board_width).enumerate() {
             self.board[row_idx][col_idx] = match ch {
                 '.' => Cell::Empty,
-                '@' | 'a' => if self.player == Player::One { Cell::Player1 } else { Cell::Player2 },
-                '$' | 's' => if self.player == Player::One { Cell::Player2 } else { Cell::Player1 },
+                '@' | 'a' => Cell::Player1,  // @ and a are always Player 1
+                '$' | 's' => Cell::Player2,  // $ and s are always Player 2
                 _ => return Err(format!("Unknown board cell: {}", ch)),
             };
         }
@@ -536,22 +536,22 @@ impl GameState {
             if self.board[by][bx] == Cell::Empty {
                 cells_captured += 1;
                 
-                // BREAKTHROUGH STRATEGY: Simple territory value + future move potential
-                score += 1500; // Slightly increased territory value to compete with bender
+                // CONNECTIVITY-FIRST STRATEGY: Prioritize moves that keep us connected to large empty areas
+                // This prevents the "0 0" fallbacks that are killing us
+                score += 1000; // Base territory value
                 
-                // Key insight: Prioritize moves that keep maximum future options open
+                // CRITICAL: Heavily weight moves that connect to large empty regions
                 let empty_neighbors = self.count_empty_neighbors(bx, by);
-                score += empty_neighbors * 200; // Future move potential
+                score += empty_neighbors * empty_neighbors * 1000; // Quadratic bonus for connectivity
             }
         }
         
-        // Simple piece efficiency: reward capturing more territory
+        // HYBRID STRATEGY: Combine connectivity and piece size for maximum effectiveness
         if cells_captured > 0 {
-            // BREAKTHROUGH INSIGHT: Simple territory counting works better than complex scoring
-            score += cells_captured * 500; // Linear bonus for territory captured
-            
-            // Base bonus for any valid move
-            score += 5000;
+            // CONNECTIVITY + PIECE SIZE: Prevent "0 0" fallbacks while maximizing territory
+            // The connectivity scoring above prevents early game death
+            // Now add piece size bonus for efficient territory capture
+            score += cells_captured * cells_captured * 5000; // Quadratic piece size bonus
             
             return score;
         } else {
@@ -585,33 +585,20 @@ impl GameState {
             eprintln!("Found {} legal moves. Territory: Us={}, Opponent={}", 
                      legal_moves.len(), my_territory, opponent_territory);
             
-            // Score all moves and collect them for strategic selection
-            let mut scored_moves: Vec<ScoredMove> = Vec::new();
+            // Find the best move by scoring all legal moves
+            let mut best_move = legal_moves[0];
+            let mut best_score = self.score_move(best_move.0, best_move.1, &distance_map, piece_offsets);
             
             for &(x, y) in &legal_moves {
                 let score = self.score_move(x, y, &distance_map, piece_offsets);
-                scored_moves.push(ScoredMove::new(x, y, score));
+                if score > best_score {
+                    best_score = score;
+                    best_move = (x, y);
+                }
             }
             
-            // Sort moves by score (highest first)
-            scored_moves.sort_by(|a, b| b.score.cmp(&a.score));
-            
-            // Strategic move selection: Consider top moves and apply additional criteria
-            let best_move = if scored_moves.len() == 1 {
-                // Only one move available
-                scored_moves[0].clone()
-            } else if scored_moves.len() <= 3 {
-                // Few moves available - pick the absolute best
-                scored_moves[0].clone()
-            } else {
-                // Multiple good moves - apply advanced selection strategy
-                self.select_strategic_move(&scored_moves, &distance_map, piece_offsets)
-            };
-            
-            eprintln!("Selected move ({}, {}) with score {}", 
-                     best_move.x, best_move.y, best_move.score);
-            
-            println!("{} {}", best_move.x, best_move.y);
+            eprintln!("DEBUG: Best move ({}, {}) with score {}", best_move.0, best_move.1, best_score);
+            println!("{} {}", best_move.0, best_move.1);
         }
         
         io::stdout().flush().unwrap();
