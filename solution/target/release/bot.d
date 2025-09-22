@@ -1,1 +1,1 @@
-/filler/solution/target/release/bot: /filler/solution/src/main.rs
+/filler/solution/target/release/bot: /filler/solution/src/game/game_state.rs /filler/solution/src/game/mod.rs /filler/solution/src/game/move_execution.rs /filler/solution/src/game/move_validation.rs /filler/solution/src/game/scoring.rs /filler/solution/src/game/strategy.rs /filler/solution/src/lib.rs /filler/solution/src/main.rs /filler/solution/src/types.rs
